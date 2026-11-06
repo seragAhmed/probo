@@ -10,10 +10,6 @@
     "internalControlsLoadError": "Interne controles konden niet worden geladen",
     "noDescription": "Geen beschrijving",
     "unassigned": "Niet toegewezen",
-    "assigneeMenu": {
-      "searchPlaceholder": "Zoeken op naam of e-mail",
-      "empty": "Geen gebruikers"
-    },
     "fields": {
       "name": "Naam",
       "description": "Beschrijving",

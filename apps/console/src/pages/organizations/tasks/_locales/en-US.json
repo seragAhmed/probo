@@ -10,10 +10,6 @@
     "internalControlsLoadError": "Could not load internal controls",
     "noDescription": "No description",
     "unassigned": "Not assigned",
-    "assigneeMenu": {
-      "searchPlaceholder": "Search by name or email",
-      "empty": "No users"
-    },
     "fields": {
       "name": "Name",
       "description": "Description",

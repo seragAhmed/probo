@@ -22,6 +22,7 @@ package console_test
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,6 +44,7 @@ func TestFinding_CreateNonconformity(t *testing.T) {
 						id
 						kind
 						referenceId
+						title
 						description
 						rootCause
 						correctiveAction
@@ -61,6 +63,7 @@ func TestFinding_CreateNonconformity(t *testing.T) {
 					ID               string `json:"id"`
 					Kind             string `json:"kind"`
 					ReferenceID      string `json:"referenceId"`
+					Title            string `json:"title"`
 					Description      string `json:"description"`
 					RootCause        string `json:"rootCause"`
 					CorrectiveAction string `json:"correctiveAction"`
@@ -75,6 +78,7 @@ func TestFinding_CreateNonconformity(t *testing.T) {
 		"input": map[string]any{
 			"organizationId":   owner.GetOrganizationID().String(),
 			"kind":             "MINOR_NONCONFORMITY",
+			"title":            "Access review gap",
 			"description":      "Unauthorized access detected",
 			"rootCause":        "Insufficient access controls",
 			"correctiveAction": "Implement MFA",
@@ -88,6 +92,7 @@ func TestFinding_CreateNonconformity(t *testing.T) {
 	node := result.CreateFinding.FindingEdge.Node
 	assert.NotEmpty(t, node.ID)
 	assert.Equal(t, "MINOR_NONCONFORMITY", node.Kind)
+	assert.Equal(t, "Access review gap", node.Title)
 	assert.Equal(t, "Unauthorized access detected", node.Description)
 	assert.Equal(t, "Insufficient access controls", node.RootCause)
 	assert.Equal(t, "Implement MFA", node.CorrectiveAction)
@@ -136,6 +141,7 @@ func TestFinding_CreateObservation(t *testing.T) {
 		"input": map[string]any{
 			"organizationId": owner.GetOrganizationID().String(),
 			"kind":           "OBSERVATION",
+			"title":          "Access review gap",
 			"description":    "Improve security training program",
 			"source":         "Internal Audit",
 			"ownerId":        profileID,
@@ -185,6 +191,7 @@ func TestFinding_Update(t *testing.T) {
 		"input": map[string]any{
 			"organizationId": owner.GetOrganizationID().String(),
 			"kind":           "MINOR_NONCONFORMITY",
+			"title":          "Access review gap",
 			"description":    "Original description",
 			"ownerId":        profileID,
 			"status":         "OPEN",
@@ -244,6 +251,98 @@ func TestFinding_Update(t *testing.T) {
 	assert.Equal(t, "HIGH", f.Priority)
 }
 
+func TestFinding_ConcurrentFieldUpdates(t *testing.T) {
+	t.Parallel()
+	owner := testutil.NewClient(t, testutil.RoleOwner)
+	profileID := factory.CreateUser(owner)
+
+	var createResult struct {
+		CreateFinding struct {
+			FindingEdge struct {
+				Node struct {
+					ID string `json:"id"`
+				} `json:"node"`
+			} `json:"findingEdge"`
+		} `json:"createFinding"`
+	}
+
+	err := owner.Execute(`
+		mutation CreateFinding($input: CreateFindingInput!) {
+			createFinding(input: $input) {
+				findingEdge {
+					node {
+						id
+					}
+				}
+			}
+		}
+	`, map[string]any{
+		"input": map[string]any{
+			"organizationId": owner.GetOrganizationID().String(),
+			"kind":           "MINOR_NONCONFORMITY",
+			"title":          "Original title",
+			"description":    "Original description",
+			"ownerId":        profileID,
+			"status":         "OPEN",
+			"priority":       "LOW",
+		},
+	}, &createResult)
+	require.NoError(t, err)
+
+	findingID := createResult.CreateFinding.FindingEdge.Node.ID
+	updateQuery := `
+		mutation UpdateFinding($input: UpdateFindingInput!) {
+			updateFinding(input: $input) {
+				finding {
+					id
+				}
+			}
+		}
+	`
+
+	for round := range 10 {
+		title := fmt.Sprintf("Title %d", round)
+		description := fmt.Sprintf("Description %d", round)
+		errs := make([]error, 2)
+
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			errs[0] = owner.Execute(updateQuery, map[string]any{
+				"input": map[string]any{"id": findingID, "title": title},
+			}, &struct{}{})
+		})
+		wg.Go(func() {
+			errs[1] = owner.Execute(updateQuery, map[string]any{
+				"input": map[string]any{"id": findingID, "description": description},
+			}, &struct{}{})
+		})
+		wg.Wait()
+		require.NoError(t, errs[0])
+		require.NoError(t, errs[1])
+
+		var result struct {
+			Node struct {
+				Title       string `json:"title"`
+				Description string `json:"description"`
+			} `json:"node"`
+		}
+
+		err := owner.Execute(`
+			query($id: ID!) {
+				node(id: $id) {
+					... on Finding {
+						title
+						description
+					}
+				}
+			}
+		`, map[string]any{"id": findingID}, &result)
+		require.NoError(t, err)
+		assert.Equal(t, title, result.Node.Title, "round %d", round)
+		assert.Equal(t, description, result.Node.Description, "round %d", round)
+	}
+}
+
 func TestFinding_Delete(t *testing.T) {
 	t.Parallel()
 	owner := testutil.NewClient(t, testutil.RoleOwner)
@@ -275,6 +374,7 @@ func TestFinding_Delete(t *testing.T) {
 		"input": map[string]any{
 			"organizationId": owner.GetOrganizationID().String(),
 			"kind":           "OBSERVATION",
+			"title":          "Access review gap",
 			"ownerId":        profileID,
 			"status":         "OPEN",
 			"priority":       "LOW",
@@ -339,6 +439,7 @@ func TestFinding_List(t *testing.T) {
 			"input": map[string]any{
 				"organizationId": owner.GetOrganizationID().String(),
 				"kind":           "MINOR_NONCONFORMITY",
+				"title":          "Access review gap",
 				"description":    fmt.Sprintf("Finding %d", i),
 				"ownerId":        profileID,
 				"status":         "OPEN",
@@ -426,6 +527,7 @@ func TestFinding_ListWithKindFilter(t *testing.T) {
 			"input": map[string]any{
 				"organizationId": owner.GetOrganizationID().String(),
 				"kind":           kind,
+				"title":          "Access review gap",
 				"ownerId":        profileID,
 				"status":         "OPEN",
 				"priority":       "LOW",
@@ -513,6 +615,7 @@ func TestFinding_ListWithAuditFilter(t *testing.T) {
 			"input": map[string]any{
 				"organizationId": owner.GetOrganizationID().String(),
 				"kind":           "OBSERVATION",
+				"title":          "Access review gap",
 				"ownerId":        profileID,
 				"status":         "OPEN",
 				"priority":       "LOW",
@@ -659,6 +762,7 @@ func TestFinding_CreateAuditMapping(t *testing.T) {
 		"input": map[string]any{
 			"organizationId": owner.GetOrganizationID().String(),
 			"kind":           "MINOR_NONCONFORMITY",
+			"title":          "Access review gap",
 			"ownerId":        profileID,
 			"status":         "OPEN",
 			"priority":       "HIGH",
@@ -801,6 +905,7 @@ func TestFinding_DeleteAuditMapping(t *testing.T) {
 		"input": map[string]any{
 			"organizationId": owner.GetOrganizationID().String(),
 			"kind":           "OBSERVATION",
+			"title":          "Access review gap",
 			"ownerId":        profileID,
 			"status":         "OPEN",
 			"priority":       "LOW",
@@ -950,6 +1055,7 @@ func TestFinding_StatusAndPriorityValues(t *testing.T) {
 						input := map[string]any{
 							"organizationId": owner.GetOrganizationID().String(),
 							"kind":           "MINOR_NONCONFORMITY",
+							"title":          "Access review gap",
 							"ownerId":        profileID,
 							"status":         status,
 							"priority":       "LOW",
@@ -998,6 +1104,7 @@ func TestFinding_StatusAndPriorityValues(t *testing.T) {
 							"input": map[string]any{
 								"organizationId": owner.GetOrganizationID().String(),
 								"kind":           "OBSERVATION",
+								"title":          "Access review gap",
 								"ownerId":        profileID,
 								"status":         "OPEN",
 								"priority":       priority,
@@ -1010,6 +1117,186 @@ func TestFinding_StatusAndPriorityValues(t *testing.T) {
 			}
 		},
 	)
+}
+
+func TestFinding_LinkTask(t *testing.T) {
+	t.Parallel()
+	owner := testutil.NewClient(t, testutil.RoleOwner)
+	profileID := factory.CreateUser(owner)
+	taskID := factory.CreateTask(owner, nil)
+
+	var created struct {
+		CreateFinding struct {
+			FindingEdge struct {
+				Node struct {
+					ID string `json:"id"`
+				} `json:"node"`
+			} `json:"findingEdge"`
+		} `json:"createFinding"`
+	}
+
+	err := owner.Execute(`
+		mutation($input: CreateFindingInput!) {
+			createFinding(input: $input) {
+				findingEdge { node { id } }
+			}
+		}
+	`, map[string]any{
+		"input": map[string]any{
+			"organizationId": owner.GetOrganizationID().String(),
+			"kind":           "OBSERVATION",
+			"title":          "Access review gap",
+			"ownerId":        profileID,
+			"status":         "OPEN",
+			"priority":       "LOW",
+		},
+	}, &created)
+	require.NoError(t, err)
+
+	findingID := created.CreateFinding.FindingEdge.Node.ID
+
+	err = owner.Execute(`
+		mutation($input: CreateFindingTaskMappingInput!) {
+			createFindingTaskMapping(input: $input) {
+				taskEdge { node { id } }
+			}
+		}
+	`, map[string]any{
+		"input": map[string]any{
+			"findingId": findingID,
+			"taskId":    taskID,
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	var listed struct {
+		Node struct {
+			Tasks struct {
+				TotalCount int `json:"totalCount"`
+				Edges      []struct {
+					Node struct {
+						ID string `json:"id"`
+					} `json:"node"`
+				} `json:"edges"`
+			} `json:"tasks"`
+		} `json:"node"`
+	}
+
+	err = owner.Execute(`
+		query($id: ID!) {
+			node(id: $id) {
+				... on Finding {
+					tasks(first: 10) {
+						totalCount
+						edges { node { id } }
+					}
+				}
+			}
+		}
+	`, map[string]any{"id": findingID}, &listed)
+	require.NoError(t, err)
+	assert.Equal(t, 1, listed.Node.Tasks.TotalCount)
+	require.Len(t, listed.Node.Tasks.Edges, 1)
+	assert.Equal(t, taskID, listed.Node.Tasks.Edges[0].Node.ID)
+
+	var taskFindings struct {
+		Node struct {
+			Findings struct {
+				TotalCount int `json:"totalCount"`
+				Edges      []struct {
+					Node struct {
+						ID string `json:"id"`
+					} `json:"node"`
+				} `json:"edges"`
+			} `json:"findings"`
+		} `json:"node"`
+	}
+
+	err = owner.Execute(`
+		query($id: ID!) {
+			node(id: $id) {
+				... on Task {
+					findings(first: 10) {
+						totalCount
+						edges { node { id } }
+					}
+				}
+			}
+		}
+	`, map[string]any{"id": taskID}, &taskFindings)
+	require.NoError(t, err)
+	assert.Equal(t, 1, taskFindings.Node.Findings.TotalCount)
+	require.Len(t, taskFindings.Node.Findings.Edges, 1)
+	assert.Equal(t, findingID, taskFindings.Node.Findings.Edges[0].Node.ID)
+
+	var unlinked struct {
+		DeleteFindingTaskMapping struct {
+			DeletedFindingID string `json:"deletedFindingId"`
+			DeletedTaskID    string `json:"deletedTaskId"`
+		} `json:"deleteFindingTaskMapping"`
+	}
+
+	err = owner.Execute(`
+		mutation($input: DeleteFindingTaskMappingInput!) {
+			deleteFindingTaskMapping(input: $input) {
+				deletedFindingId
+				deletedTaskId
+			}
+		}
+	`, map[string]any{
+		"input": map[string]any{
+			"findingId": findingID,
+			"taskId":    taskID,
+		},
+	}, &unlinked)
+	require.NoError(t, err)
+	assert.Equal(t, findingID, unlinked.DeleteFindingTaskMapping.DeletedFindingID)
+	assert.Equal(t, taskID, unlinked.DeleteFindingTaskMapping.DeletedTaskID)
+
+	var afterUnlink struct {
+		Node struct {
+			Tasks struct {
+				TotalCount int `json:"totalCount"`
+				Edges      []struct {
+					Node struct {
+						ID string `json:"id"`
+					} `json:"node"`
+				} `json:"edges"`
+			} `json:"tasks"`
+		} `json:"node"`
+	}
+
+	err = owner.Execute(`
+		query($id: ID!) {
+			node(id: $id) {
+				... on Finding {
+					tasks(first: 10) {
+						totalCount
+						edges { node { id } }
+					}
+				}
+			}
+		}
+	`, map[string]any{"id": findingID}, &afterUnlink)
+	require.NoError(t, err)
+	assert.Equal(t, 0, afterUnlink.Node.Tasks.TotalCount)
+	assert.Empty(t, afterUnlink.Node.Tasks.Edges)
+
+	err = owner.Execute(`
+		query($id: ID!) {
+			node(id: $id) {
+				... on Task {
+					findings(first: 10) {
+						totalCount
+						edges { node { id } }
+					}
+				}
+			}
+		}
+	`, map[string]any{"id": taskID}, &taskFindings)
+	require.NoError(t, err)
+	assert.Equal(t, 0, taskFindings.Node.Findings.TotalCount)
+	assert.Empty(t, taskFindings.Node.Findings.Edges)
 }
 
 // TestFinding_TenantIsolation covers GHSA-c74x-79w6-63jh: a finding must not

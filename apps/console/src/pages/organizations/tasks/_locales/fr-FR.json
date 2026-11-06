@@ -10,10 +10,6 @@
     "internalControlsLoadError": "Impossible de charger les contrôles internes",
     "noDescription": "Aucune description",
     "unassigned": "Non assigné",
-    "assigneeMenu": {
-      "searchPlaceholder": "Rechercher par nom ou e-mail",
-      "empty": "Aucun utilisateur"
-    },
     "fields": {
       "name": "Nom",
       "description": "Description",
